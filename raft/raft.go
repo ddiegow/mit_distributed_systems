@@ -18,9 +18,11 @@ package raft
 //
 
 import (
+	"math/rand"
 	"mit_distributed_systems/labrpc"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // import "bytes"
@@ -47,6 +49,11 @@ const (
 	LEADER    = 2
 )
 
+type logEntry struct {
+	command interface{}
+	term    int
+}
+
 // A Go object implementing a single Raft peer.
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
@@ -58,7 +65,13 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-	state int
+	state       int
+	currentTerm int
+	votedFor    int
+	numVotes    int
+	log         []logEntry
+	// Channels
+	heartBeatChan chan bool
 }
 
 // return currentTerm and whether this server
@@ -109,12 +122,18 @@ func (rf *Raft) readPersist(data []byte) {
 // field names must start with capital letters!
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
+	Term         int
+	CandidateId  int
+	LastLogIndex int
+	LastLogTerm  int
 }
 
 // example RequestVote RPC reply structure.
 // field names must start with capital letters!
 type RequestVoteReply struct {
 	// Your data here (2A).
+	Term        int
+	VoteGranted bool
 }
 
 // example RequestVote RPC handler.
@@ -202,9 +221,16 @@ func (rf *Raft) handleServer() {
 	rf.mu.Unlock()
 	for !rf.killed() {
 		switch serverState {
-		// Followers need to handle:
+		// Followers:
+		// 		receive heartbeats
+		// 		handle election timeouts
 		case FOLLOWER:
-
+			select {
+			case <-rf.heartBeatChan:
+			case <-time.After(rf.getElectionTimeout()):
+				// convert from follower to candidate and start election
+				rf.toCandidate(FOLLOWER)
+			}
 		// Candidates need to handle:
 		case CANDIDATE:
 
@@ -213,6 +239,59 @@ func (rf *Raft) handleServer() {
 
 		}
 	}
+}
+func (rf *Raft) toCandidate(originalState int) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if rf.state != originalState {
+		return
+	}
+	// change state
+	rf.state = CANDIDATE
+	// increase current term
+	rf.currentTerm++
+	// vote for self
+	rf.votedFor = rf.me
+	rf.numVotes = 1
+	// clean-up all the channels
+	rf.cleanUpChans()
+	rf.startElection()
+}
+
+// always check that lock is being held before calling this function!
+func (rf *Raft) startElection() {
+	if rf.state != LEADER {
+		return
+	}
+	args := RequestVoteArgs{
+		Term:         rf.currentTerm,
+		CandidateId:  rf.me,
+		LastLogIndex: rf.getLastIndex(),
+		LastLogTerm:  rf.getLastTerm(),
+	}
+
+	for server := range rf.peers {
+		if server == rf.me {
+			continue
+		}
+		go rf.sendRequestVote(server, &args, &RequestVoteReply{})
+	}
+}
+
+// always check that lock is being held before calling this function!
+func (rf *Raft) getLastIndex() int {
+	return len(rf.log) - 1
+}
+
+// always check that lock is being held before calling this function!
+func (rf *Raft) getLastTerm() int {
+	return rf.log[rf.getLastIndex()].term
+}
+func (rf *Raft) cleanUpChans() {
+	rf.heartBeatChan = make(chan bool)
+}
+func (rf *Raft) getElectionTimeout() time.Duration {
+	return time.Duration(300+rand.Intn(200)) * time.Millisecond
 }
 
 // the service or tester wants to create a Raft server. the ports
@@ -232,6 +311,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (2A, 2B, 2C).
+	rf.state = FOLLOWER
+	rf.currentTerm = 0
+	rf.log = make([]logEntry, 0)
+	rf.currentTerm = 0
+	rf.heartBeatChan = make(chan bool)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
