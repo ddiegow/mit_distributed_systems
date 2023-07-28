@@ -18,7 +18,6 @@ package raft
 //
 
 import (
-	"fmt"
 	"math/rand"
 	"mit_distributed_systems/labrpc"
 	"sync"
@@ -162,7 +161,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		// Could possibly do this in one if statement, but it seems more readable this way
 		if args.LastLogTerm > rf.getLastTerm() { // candidate's last log term is higher
 			reply.VoteGranted = true
-
 			rf.votedFor = args.CandidateId
 			rf.sendToNonBlockChan(rf.votedChan, true)
 			return
@@ -227,7 +225,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 
 	if reply.VoteGranted {
 		rf.numVotes++
-		if rf.numVotes > len(rf.peers)/2 {
+		if rf.numVotes == len(rf.peers)/2+1 {
 			rf.sendToNonBlockChan(rf.electionWonChan, true)
 		}
 	}
@@ -258,8 +256,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 	if args.Term > rf.currentTerm {
-		rf.toFollower(args.Term)
 		reply.Term = args.Term
+		rf.toFollower(args.Term)
+
 	}
 	rf.sendToNonBlockChan(rf.heartBeatChan, true)
 }
@@ -269,6 +268,22 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	if !ok {
 		return
 	}
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if rf.state != LEADER {
+		return
+	}
+	if args.Term != rf.currentTerm {
+		return
+	}
+	if reply.Term < rf.currentTerm {
+		return
+	}
+	if reply.Term > rf.currentTerm {
+		rf.sendToNonBlockChan(rf.stepDownChan, true)
+		return
+	}
+
 }
 
 // the service using Raft (e.g. a k/v server) wants to start
@@ -325,8 +340,8 @@ func (rf *Raft) handleServer() {
 		// 		handle election timeouts
 		case FOLLOWER:
 			select {
-			case <-rf.heartBeatChan: // skip re-election timer if we got a heart-beat
 			case <-rf.votedChan: // skip re-election if we voted
+			case <-rf.heartBeatChan: // skip re-election timer if we got a heart-beat
 			case <-time.After(rf.getElectionTimeout()):
 				// convert from follower to candidate and start election
 				rf.toCandidate(FOLLOWER)
@@ -336,8 +351,8 @@ func (rf *Raft) handleServer() {
 			select {
 			case <-rf.stepDownChan: // we are already a follower, so next select iteration it will go to the follower case
 			case <-rf.electionWonChan:
-				fmt.Println("Becoming leader") // need to figure out why this is needed :S :S :S
-				rf.toLeader()
+				//time.Sleep(1 * time.Millisecond)
+				rf.toLeader() // There is a lock conflict here. If this function acquires to lock instantly, some other crucial part of the program doesn't, and it fails.
 			case <-time.After(rf.getElectionTimeout()):
 				rf.toCandidate(CANDIDATE)
 			}
@@ -346,7 +361,7 @@ func (rf *Raft) handleServer() {
 		case LEADER:
 			select {
 			case <-rf.stepDownChan: // we are already a follower, so next select iteration it won't send the heartbeat
-			case <-time.After(150 * time.Millisecond):
+			case <-time.After(120 * time.Millisecond):
 				rf.mu.Lock()
 				rf.heartBeat()
 				rf.mu.Unlock()
@@ -355,21 +370,21 @@ func (rf *Raft) handleServer() {
 	}
 }
 func (rf *Raft) toLeader() {
+	//time.Sleep(1 * time.Millisecond)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	if rf.state != CANDIDATE { // if we're not the candidate (maybe somebody else won the election before us)
 		return // return
 	}
-	rf.state = LEADER
 	rf.cleanUpChans()
+	rf.state = LEADER
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
-	lastLogIndex := rf.getLastIndex()
+	lastLogIndex := rf.getLastIndex() + 1
 	for i := 0; i < len(rf.peers); i++ {
-		rf.nextIndex[i] = lastLogIndex + 1
+		rf.nextIndex[i] = lastLogIndex
 	}
 	rf.heartBeat()
-
 }
 func (rf *Raft) toCandidate(originalState int) {
 	rf.mu.Lock()
@@ -377,6 +392,7 @@ func (rf *Raft) toCandidate(originalState int) {
 	if rf.state != originalState {
 		return
 	}
+	rf.cleanUpChans()
 	// change state
 	rf.state = CANDIDATE
 	// increase current term
@@ -385,7 +401,7 @@ func (rf *Raft) toCandidate(originalState int) {
 	rf.votedFor = rf.me
 	rf.numVotes = 1
 	// clean-up all the channels
-	rf.cleanUpChans()
+
 	rf.startElection()
 }
 
@@ -472,7 +488,8 @@ func (rf *Raft) cleanUpChans() {
 	rf.electionWonChan = make(chan bool)
 }
 func (rf *Raft) getElectionTimeout() time.Duration {
-	return time.Duration(400+rand.Intn(200)) * time.Millisecond
+	time := time.Duration(350+rand.Intn(250)) * time.Millisecond
+	return time
 }
 
 // this allows us to send a message to the channel without blocking
