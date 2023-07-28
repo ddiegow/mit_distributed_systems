@@ -50,9 +50,9 @@ const (
 	LEADER    = 2
 )
 
-type logEntry struct {
-	command interface{}
-	term    int
+type LogEntry struct {
+	Command interface{}
+	Term    int
 }
 
 // A Go object implementing a single Raft peer.
@@ -74,7 +74,7 @@ type Raft struct {
 	lastApplied int
 	nextIndex   []int
 	matchIndex  []int
-	log         []logEntry
+	log         []LogEntry
 	// Channels
 	resetElectionTimerChan chan bool
 	electionWonChan        chan bool
@@ -229,7 +229,6 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	if reply.VoteGranted {
 		rf.numVotes++
 		if rf.numVotes > len(rf.peers)/2 {
-			fmt.Printf("Sending election won %v signal with state %v\n", rf.electionWonChan, rf.state)
 			rf.sendToNonBlockChan(rf.electionWonChan, true)
 		}
 	}
@@ -242,7 +241,7 @@ type AppendEntriesArgs struct {
 	LeaderId     int
 	PrevLogIndex int
 	PrevLogTerm  int
-	Entries      []logEntry
+	Entries      []LogEntry
 	LeaderCommit int
 }
 
@@ -265,8 +264,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.sendToNonBlockChan(rf.resetElectionTimerChan, true)
 }
 
-func (rf *Raft) sendAppendEntries(index int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	ok := rf.peers[index].Call("AppendEntries", args, reply)
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	if !ok {
 		return
 	}
@@ -315,10 +314,10 @@ func (rf *Raft) killed() bool {
 
 // this function
 func (rf *Raft) handleServer() {
-	rf.mu.Lock()
-	serverState := rf.state
-	rf.mu.Unlock()
 	for !rf.killed() {
+		rf.mu.Lock()
+		serverState := rf.state
+		rf.mu.Unlock()
 		switch serverState {
 		// Followers:
 		// 		reset election timer on heartbeat
@@ -333,6 +332,7 @@ func (rf *Raft) handleServer() {
 			}
 		// Candidates need to handle:
 		case CANDIDATE:
+			fmt.Println("I'm a candidate")
 			select {
 			case <-rf.stepDownChan: // we are already a follower, so next select iteration it will go to the follower case
 			case <-rf.electionWonChan: // TODO: figure out why we aren't arriving here
@@ -432,12 +432,17 @@ func (rf *Raft) heartBeat() {
 			continue
 		}
 		entries := rf.log[rf.nextIndex[server]:]
+		prevLogIndex := rf.nextIndex[server] - 1
+		prevLogTerm := -1
+		if prevLogIndex > -1 {
+			prevLogTerm = rf.log[prevLogIndex].Term
+		}
 		args := AppendEntriesArgs{
 			Term:         rf.currentTerm,
 			LeaderId:     rf.me,
-			PrevLogIndex: rf.nextIndex[server] - 1,
-			PrevLogTerm:  rf.log[rf.nextIndex[server]-1].term,
-			Entries:      make([]logEntry, len(entries)),
+			PrevLogIndex: prevLogIndex,
+			PrevLogTerm:  prevLogTerm,
+			Entries:      make([]LogEntry, len(entries)),
 			LeaderCommit: rf.commitIndex,
 		}
 		copy(args.Entries, entries)
@@ -456,7 +461,7 @@ func (rf *Raft) getLastTerm() int {
 	if rf.getLastIndex() == -1 {
 		return -1
 	}
-	return rf.log[rf.getLastIndex()].term
+	return rf.log[rf.getLastIndex()].Term
 }
 
 // always check that lock is being held before calling this function!
@@ -475,9 +480,7 @@ func (rf *Raft) getElectionTimeout() time.Duration {
 func (rf *Raft) sendToNonBlockChan(c chan bool, x bool) {
 	select {
 	case c <- x:
-
 	default:
-		fmt.Printf("Unable to send to chan %v\n", c)
 	}
 }
 
@@ -500,7 +503,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Your initialization code here (2A, 2B, 2C).
 	rf.state = FOLLOWER
 	rf.currentTerm = 0
-	rf.log = make([]logEntry, 0)
+	rf.log = make([]LogEntry, 0)
 	rf.currentTerm = 0
 	rf.resetElectionTimerChan = make(chan bool)
 	rf.electionWonChan = make(chan bool)
