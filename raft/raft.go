@@ -157,6 +157,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if args.Term > rf.currentTerm { // if the request vote has a higher term, become a follower
 		rf.toFollower(args.Term)
 	}
+	reply.VoteGranted = false // initially don't give vote
 	if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
 		// Could possibly do this in one if statement, but it seems more readable this way
 		if args.LastLogTerm > rf.getLastTerm() { // candidate's last log term is higher
@@ -165,11 +166,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			rf.votedFor = args.CandidateId
 			rf.sendToNonBlockChan(rf.votedChan, true)
 			return
-		} else if rf.getLastTerm() > args.LastLogTerm { // votee's last log term is higher
-
-			reply.VoteGranted = false
-			return
-		} else { // if the logs end with the same term
+		}
+		if args.LastLogTerm == rf.getLastTerm() { // if the logs end with the same term
 			if args.LastLogIndex >= rf.getLastIndex() { // if candidate's log is longer
 				reply.VoteGranted = true // give it the vote
 				rf.votedFor = args.CandidateId
@@ -178,7 +176,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			}
 		}
 	}
-	reply.VoteGranted = false // in any other case, don't give it the vote
+
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -261,6 +259,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 	if args.Term > rf.currentTerm {
 		rf.toFollower(args.Term)
+		reply.Term = args.Term
 	}
 	rf.sendToNonBlockChan(rf.heartBeatChan, true)
 }
@@ -334,10 +333,10 @@ func (rf *Raft) handleServer() {
 			}
 		// Candidates need to handle:
 		case CANDIDATE:
-			fmt.Println("I'm a candidate")
 			select {
 			case <-rf.stepDownChan: // we are already a follower, so next select iteration it will go to the follower case
-			case <-rf.electionWonChan: // TODO: figure out why we aren't arriving here
+			case <-rf.electionWonChan:
+				fmt.Println("Becoming leader") // need to figure out why this is needed :S :S :S
 				rf.toLeader()
 			case <-time.After(rf.getElectionTimeout()):
 				rf.toCandidate(CANDIDATE)
@@ -347,7 +346,7 @@ func (rf *Raft) handleServer() {
 		case LEADER:
 			select {
 			case <-rf.stepDownChan: // we are already a follower, so next select iteration it won't send the heartbeat
-			case <-time.After(100 * time.Millisecond):
+			case <-time.After(150 * time.Millisecond):
 				rf.mu.Lock()
 				rf.heartBeat()
 				rf.mu.Unlock()
@@ -358,7 +357,6 @@ func (rf *Raft) handleServer() {
 func (rf *Raft) toLeader() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	fmt.Println("Got the lock")
 	if rf.state != CANDIDATE { // if we're not the candidate (maybe somebody else won the election before us)
 		return // return
 	}
@@ -370,7 +368,6 @@ func (rf *Raft) toLeader() {
 	for i := 0; i < len(rf.peers); i++ {
 		rf.nextIndex[i] = lastLogIndex + 1
 	}
-	fmt.Println("Sending heartbeats")
 	rf.heartBeat()
 
 }
@@ -475,7 +472,7 @@ func (rf *Raft) cleanUpChans() {
 	rf.electionWonChan = make(chan bool)
 }
 func (rf *Raft) getElectionTimeout() time.Duration {
-	return time.Duration(200+rand.Intn(200)) * time.Millisecond
+	return time.Duration(400+rand.Intn(200)) * time.Millisecond
 }
 
 // this allows us to send a message to the channel without blocking
