@@ -228,7 +228,8 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 
 	if reply.VoteGranted {
 		rf.numVotes++
-		if rf.numVotes > len(rf.peers)/2+1 {
+		if rf.numVotes > len(rf.peers)/2 {
+			fmt.Printf("Sending election won %v signal with state %v\n", rf.electionWonChan, rf.state)
 			rf.sendToNonBlockChan(rf.electionWonChan, true)
 		}
 	}
@@ -334,7 +335,7 @@ func (rf *Raft) handleServer() {
 		case CANDIDATE:
 			select {
 			case <-rf.stepDownChan: // we are already a follower, so next select iteration it will go to the follower case
-			case <-rf.electionWonChan:
+			case <-rf.electionWonChan: // TODO: figure out why we aren't arriving here
 				fmt.Println("Converting to leader")
 				rf.toLeader()
 			case <-time.After(rf.getElectionTimeout()):
@@ -457,8 +458,11 @@ func (rf *Raft) getLastTerm() int {
 	}
 	return rf.log[rf.getLastIndex()].term
 }
+
+// always check that lock is being held before calling this function!
 func (rf *Raft) cleanUpChans() {
 	rf.resetElectionTimerChan = make(chan bool)
+	rf.stepDownChan = make(chan bool)
 	rf.electionWonChan = make(chan bool)
 }
 func (rf *Raft) getElectionTimeout() time.Duration {
@@ -471,7 +475,9 @@ func (rf *Raft) getElectionTimeout() time.Duration {
 func (rf *Raft) sendToNonBlockChan(c chan bool, x bool) {
 	select {
 	case c <- x:
+
 	default:
+		fmt.Printf("Unable to send to chan %v\n", c)
 	}
 }
 
