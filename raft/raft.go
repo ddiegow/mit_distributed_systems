@@ -86,6 +86,7 @@ type Raft struct {
 func (rf *Raft) GetState() (int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	//fmt.Printf("[Server %v] Acquiring lock 1\n", rf.me)
 	return rf.currentTerm, rf.state == LEADER
 }
 
@@ -146,7 +147,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-
+	//fmt.Printf("[Server %v] Acquiring lock 2\n", rf.me)
 	reply.Term = rf.currentTerm
 
 	if args.Term < rf.currentTerm { // if candidate's term lower
@@ -212,7 +213,8 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	}
 
 	rf.mu.Lock()
-
+	defer rf.mu.Unlock()
+	//fmt.Printf("[Server %v] Acquiring lock 3\n", rf.me)
 	if rf.state != CANDIDATE { // if we're not the candidate
 		return // skip the vote
 	}
@@ -226,11 +228,10 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	if reply.VoteGranted {
 		rf.numVotes++
 		if rf.numVotes == len(rf.peers)/2+1 {
-			rf.sendToNonBlockChan(rf.electionWonChan, true)
+			time.Sleep(time.Millisecond)
+			rf.sendToNonBlockChan(rf.electionWonChan, true) // this happens too soon
 		}
 	}
-	rf.mu.Unlock()
-
 }
 
 type AppendEntriesArgs struct {
@@ -331,6 +332,7 @@ func (rf *Raft) killed() bool {
 func (rf *Raft) handleServer() {
 	for !rf.killed() {
 		rf.mu.Lock()
+		//fmt.Printf("[Server %v][State %v] Acquiring lock 5\n", rf.me, rf.state)
 		serverState := rf.state
 		rf.mu.Unlock()
 		switch serverState {
@@ -370,7 +372,6 @@ func (rf *Raft) handleServer() {
 	}
 }
 func (rf *Raft) toLeader() {
-	//time.Sleep(1 * time.Millisecond)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	if rf.state != CANDIDATE { // if we're not the candidate (maybe somebody else won the election before us)
