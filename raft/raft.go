@@ -86,7 +86,6 @@ type Raft struct {
 func (rf *Raft) GetState() (int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	//fmt.Printf("[Server %v] Acquiring lock 1\n", rf.me)
 	return rf.currentTerm, rf.state == LEADER
 }
 
@@ -147,7 +146,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	//fmt.Printf("[Server %v] Acquiring lock 2\n", rf.me)
 	reply.Term = rf.currentTerm
 
 	if args.Term < rf.currentTerm { // if candidate's term lower
@@ -214,7 +212,6 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	//fmt.Printf("[Server %v] Acquiring lock 3\n", rf.me)
 	if rf.state != CANDIDATE { // if we're not the candidate
 		return // skip the vote
 	}
@@ -332,7 +329,6 @@ func (rf *Raft) killed() bool {
 func (rf *Raft) handleServer() {
 	for !rf.killed() {
 		rf.mu.Lock()
-		//fmt.Printf("[Server %v][State %v] Acquiring lock 5\n", rf.me, rf.state)
 		serverState := rf.state
 		rf.mu.Unlock()
 		switch serverState {
@@ -353,8 +349,7 @@ func (rf *Raft) handleServer() {
 			select {
 			case <-rf.stepDownChan: // we are already a follower, so next select iteration it will go to the follower case
 			case <-rf.electionWonChan:
-				//time.Sleep(1 * time.Millisecond)
-				rf.toLeader() // There is a lock conflict here. If this function acquires to lock instantly, some other crucial part of the program doesn't, and it fails.
+				rf.toLeader()
 			case <-time.After(rf.getElectionTimeout()):
 				rf.toCandidate(CANDIDATE)
 			}
