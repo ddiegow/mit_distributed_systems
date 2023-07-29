@@ -1,3 +1,4 @@
+// NOTE: THERE ARE TERM CHANGE WARNINGS IN TEST 2A-1. CLUSTER SERVER TERM CHANGES SOMETIMES WITHOUT ANY NETWORK FAILURES
 package raft
 
 //
@@ -79,6 +80,7 @@ type Raft struct {
 	heartBeatChan   chan bool
 	electionWonChan chan bool
 	stepDownChan    chan bool
+	voteCounterChan chan bool
 }
 
 // return currentTerm and whether this server
@@ -223,11 +225,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	}
 
 	if reply.VoteGranted {
-		rf.numVotes++
-		if rf.numVotes == len(rf.peers)/2+1 {
-			time.Sleep(time.Millisecond)
-			rf.sendToNonBlockChan(rf.electionWonChan, true) // this happens too soon
-		}
+		rf.sendToNonBlockChan(rf.voteCounterChan, true) // already buffered, so probably not necessary
 	}
 }
 
@@ -352,13 +350,18 @@ func (rf *Raft) handleServer() {
 				rf.toLeader()
 			case <-time.After(rf.getElectionTimeout()):
 				rf.toCandidate(CANDIDATE)
+			case <-rf.voteCounterChan:
+				rf.numVotes++
+				if rf.numVotes == len(rf.peers)/2+1 {
+					rf.toLeader()
+				}
 			}
 
 		// Leaders need to handle:
 		case LEADER:
 			select {
 			case <-rf.stepDownChan: // we are already a follower, so next select iteration it won't send the heartbeat
-			case <-time.After(120 * time.Millisecond):
+			case <-time.After(100 * time.Millisecond):
 				rf.mu.Lock()
 				rf.heartBeat()
 				rf.mu.Unlock()
@@ -482,6 +485,7 @@ func (rf *Raft) cleanUpChans() {
 	rf.votedChan = make(chan bool)
 	rf.stepDownChan = make(chan bool)
 	rf.electionWonChan = make(chan bool)
+	rf.voteCounterChan = make(chan bool, len(rf.peers)-1)
 }
 func (rf *Raft) getElectionTimeout() time.Duration {
 	time := time.Duration(350+rand.Intn(250)) * time.Millisecond
@@ -523,11 +527,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.votedChan = make(chan bool)
 	rf.electionWonChan = make(chan bool)
 	rf.stepDownChan = make(chan bool)
+	rf.voteCounterChan = make(chan bool, len(rf.peers)-1)
 	rf.votedFor = -1
 	rf.commitIndex = 0
 	rf.lastApplied = 0
 	rf.matchIndex = make([]int, len(rf.peers))
 	rf.nextIndex = make([]int, len(rf.peers))
+
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 	go rf.handleServer()
