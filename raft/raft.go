@@ -78,7 +78,6 @@ type Raft struct {
 	// Channels
 	votedChan       chan bool
 	heartBeatChan   chan bool
-	electionWonChan chan bool
 	stepDownChan    chan bool
 	voteCounterChan chan bool
 }
@@ -246,17 +245,41 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	if args.Term < rf.currentTerm {
+	if args.Term < rf.currentTerm { // 1. Reply false if term < currentTerm
 		reply.Term = rf.currentTerm
 		reply.Success = false
 		return
 	}
-	if args.Term > rf.currentTerm {
+	if args.Term > rf.currentTerm { // If term T > currentTerm, set currentTerm = T and convert to follower
 		reply.Term = args.Term
 		rf.toFollower(args.Term)
 
 	}
 	rf.sendToNonBlockChan(rf.heartBeatChan, true)
+
+	// hopefully the line below works if order of evaluation if left to right
+	if args.PrevLogIndex > len(rf.log)-1 || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm { // 2. Reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
+		reply.Success = false
+		reply.Term = rf.currentTerm
+		return
+	}
+
+	if args.PrevLogIndex == -1 { // if prevLogIndex is -1, we're at the start of the log, and we can just delete the log and append everything
+		rf.log = make([]LogEntry, 0)
+		rf.log = append(rf.log, args.Entries...)
+		reply.Success = true
+		reply.Term = rf.currentTerm
+		return
+	}
+
+	if args.LeaderCommit > rf.commitIndex { // 5. If leaderCommit > commitIndex
+		if args.LeaderCommit > len(rf.log)-1 {
+			rf.commitIndex = args.LeaderCommit
+		} else {
+			rf.commitIndex = len(rf.log) - 1
+		}
+	}
+
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -346,8 +369,6 @@ func (rf *Raft) handleServer() {
 		case CANDIDATE:
 			select {
 			case <-rf.stepDownChan: // we are already a follower, so next select iteration it will go to the follower case
-			case <-rf.electionWonChan:
-				rf.toLeader()
 			case <-time.After(rf.getElectionTimeout()):
 				rf.toCandidate(CANDIDATE)
 			case <-rf.voteCounterChan:
@@ -484,7 +505,6 @@ func (rf *Raft) cleanUpChans() {
 	rf.heartBeatChan = make(chan bool)
 	rf.votedChan = make(chan bool)
 	rf.stepDownChan = make(chan bool)
-	rf.electionWonChan = make(chan bool)
 	rf.voteCounterChan = make(chan bool, len(rf.peers)-1)
 }
 func (rf *Raft) getElectionTimeout() time.Duration {
@@ -525,7 +545,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.currentTerm = 0
 	rf.heartBeatChan = make(chan bool)
 	rf.votedChan = make(chan bool)
-	rf.electionWonChan = make(chan bool)
 	rf.stepDownChan = make(chan bool)
 	rf.voteCounterChan = make(chan bool, len(rf.peers)-1)
 	rf.votedFor = -1
