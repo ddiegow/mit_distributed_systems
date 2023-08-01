@@ -235,17 +235,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
-	i := args.PrevLogIndex + 1 // we start at the first position where the leader's entries start
-	j := 0                     // will use this to track the leader's entries
-	// while we are not at the end of our log and we are not at the end of the leader's entries, go next
-	for ; i < lastIndex+1 && j < len(args.Entries); i, j = i+1, j+1 {
-		if rf.log[i].Term != args.Entries[j].Term { // if the terms are different, stop
-			break
-		}
-	}
-	rf.log = rf.log[:i]                      // truncate our log up until the location where the terms are different
-	args.Entries = args.Entries[j:]          // truncate the entries too
-	rf.log = append(rf.log, args.Entries...) // append rest of the leader's entries to the log
+	rf.log = append(rf.log[:args.PrevLogIndex+1], args.Entries...) // append leader's entries to the log
 
 	reply.Success = true
 	reply.Term = rf.currentTerm
@@ -295,10 +285,11 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		rf.nextIndex[server]-- // lower the index for next try
 	} else {
 		updatedMatchIndex := args.PrevLogIndex + len(args.Entries)
-		if updatedMatchIndex > rf.matchIndex[server] {
-			rf.matchIndex[server] = updatedMatchIndex
+		// check that we're not outdated
+		if updatedMatchIndex > rf.matchIndex[server] { // if not outdated
+			rf.matchIndex[server] = updatedMatchIndex // update the match index for this server
 		}
-		rf.nextIndex[server] = rf.matchIndex[server] + 1
+		rf.nextIndex[server] = rf.matchIndex[server] + 1 // update nextIndex
 	}
 
 	// If there exists an N such that N > commitIndex, a majority
@@ -420,7 +411,7 @@ func (rf *Raft) handleServer() {
 		case LEADER:
 			select {
 			case <-rf.stepDownChan: // we are already a follower, so next select iteration it won't send the heartbeat
-			case <-time.After(100 * time.Millisecond):
+			case <-time.After(10 * time.Millisecond): // this seems to be the magic number, any lower than this and servers sometimes fail to agree, probably because of overlapping
 				rf.mu.Lock()
 				rf.heartBeat()
 				rf.mu.Unlock()
