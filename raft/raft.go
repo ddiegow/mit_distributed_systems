@@ -215,7 +215,6 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	logLength := len(rf.log)
 	if args.Term < rf.currentTerm { // 1. Reply false if term < currentTerm
 		reply.Term = rf.currentTerm
 		reply.Success = false
@@ -226,29 +225,29 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.toFollower(args.Term)
 
 	}
-	rf.sendToNonBlockChan(rf.heartBeatChan, true) // send heartbeat message to self
+	rf.sendToNonBlockChan(rf.heartBeatChan, true) // we got an rpc message from the leader so send heartbeat message to self
+	lastIndex := rf.getLastIndex()
+	// if the index is higher than the index of our items, the leader's log is longer than ours
+	// or the element at prevLogIndex has a different term than the leader, return false so we can try again in next appendEntry request with a lower index
+	if args.PrevLogIndex > lastIndex || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+		reply.Success = false
+		reply.Term = rf.currentTerm
+		return
+	}
+	// we start at the first position where the leader's entries start
+	i, j := args.PrevLogIndex+1, 0
+	// while we are not at the end of our log and we are not at the end of the leader's entries, go next
+	for ; i < lastIndex+1 && j < len(args.Entries); i, j = i+1, j+1 {
+		if rf.log[i].Term != args.Entries[j].Term { // if the terms are different, stop
+			break
+		}
+	}
+	rf.log = rf.log[:i]                      // truncate our log up until the location where the terms are different
+	args.Entries = args.Entries[j:]          // truncate the entries too
+	rf.log = append(rf.log, args.Entries...) // append rest of the leader's entries to the log
 
-	if args.PrevLogIndex == -1 { // if prevLogIndex is -1, we're at the start of the log, and we can just delete the log and append everything
-		rf.log = make([]LogEntry, 0)
-		rf.log = append(rf.log, args.Entries...)
-		reply.Success = true
-		reply.Term = rf.currentTerm
-		return
-	}
-	// hopefully the line below works if order of evaluation if left to right
-	if args.PrevLogIndex > logLength {
-		// 2. Reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
-		reply.Success = false
-		reply.Term = rf.currentTerm
-		return
-	}
-	if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
-		reply.Success = false
-		reply.Term = rf.currentTerm
-		return
-	}
-	// If we get here, the terms are the same and there is an entry at prevLogIndex
-	rf.log = append(rf.log, args.Entries...) // append the entries
+	reply.Success = true
+	reply.Term = rf.currentTerm
 
 	if args.LeaderCommit > rf.commitIndex {
 		// 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
@@ -260,13 +259,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 	}
 	// update the logs
-	for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
-		rf.applyChan <- ApplyMsg{
+	for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ { // for each of the uncommited logs that need to be commited
+		rf.applyChan <- ApplyMsg{ // send msg through apply chan for the test
 			CommandValid: true,
 			Command:      rf.log[i].Command,
 			CommandIndex: i,
 		}
-		rf.lastApplied++
+		rf.lastApplied++ // increase last applied
 	}
 }
 
@@ -507,10 +506,7 @@ func (rf *Raft) heartBeat() {
 		}
 		entries := rf.log[rf.nextIndex[server]:]
 		prevLogIndex := rf.nextIndex[server] - 1
-		prevLogTerm := -1
-		if prevLogIndex > -1 {
-			prevLogTerm = rf.log[prevLogIndex].Term
-		}
+		prevLogTerm := rf.log[prevLogIndex].Term
 		args := AppendEntriesArgs{
 			Term:         rf.currentTerm,
 			LeaderId:     rf.me,
@@ -532,9 +528,6 @@ func (rf *Raft) getLastIndex() int {
 
 // always check that lock is being held before calling this function!
 func (rf *Raft) getLastTerm() int {
-	if rf.getLastIndex() == -1 {
-		return -1
-	}
 	return rf.log[rf.getLastIndex()].Term
 }
 
@@ -590,7 +583,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastApplied = 0
 	rf.matchIndex = make([]int, len(rf.peers))
 	rf.nextIndex = make([]int, len(rf.peers))
-
+	rf.log = append(rf.log, LogEntry{Term: 0})
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 	go rf.handleServer()
