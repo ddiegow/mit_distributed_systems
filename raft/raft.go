@@ -234,8 +234,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Term = rf.currentTerm
 		return
 	}
-	// we start at the first position where the leader's entries start
-	i, j := args.PrevLogIndex+1, 0
+
+	i := args.PrevLogIndex + 1 // we start at the first position where the leader's entries start
+	j := 0                     // will use this to track the leader's entries
 	// while we are not at the end of our log and we are not at the end of the leader's entries, go next
 	for ; i < lastIndex+1 && j < len(args.Entries); i, j = i+1, j+1 {
 		if rf.log[i].Term != args.Entries[j].Term { // if the terms are different, stop
