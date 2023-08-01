@@ -80,6 +80,7 @@ type Raft struct {
 	heartBeatChan   chan bool
 	stepDownChan    chan bool
 	voteCounterChan chan bool
+	applyChan       chan ApplyMsg
 }
 
 // return currentTerm and whether this server
@@ -124,8 +125,6 @@ func (rf *Raft) readPersist(data []byte) {
 	// }
 }
 
-// example RequestVote RPC arguments structure.
-// field names must start with capital letters!
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
 	Term         int
@@ -134,8 +133,6 @@ type RequestVoteArgs struct {
 	LastLogTerm  int
 }
 
-// example RequestVote RPC reply structure.
-// field names must start with capital letters!
 type RequestVoteReply struct {
 	// Your data here (2A).
 	Term        int
@@ -177,33 +174,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 }
 
-// example code to send a RequestVote RPC to a server.
-// server is the index of the target server in rf.peers[].
-// expects RPC arguments in args.
-// fills in *reply with RPC reply, so caller should
-// pass &reply.
-// the types of the args and reply passed to Call() must be
-// the same as the types of the arguments declared in the
-// handler function (including whether they are pointers).
-//
-// The labrpc package simulates a lossy network, in which servers
-// may be unreachable, and in which requests and replies may be lost.
-// Call() sends a request and waits for a reply. If a reply arrives
-// within a timeout interval, Call() returns true; otherwise
-// Call() returns false. Thus Call() may not return for a while.
-// A false return can be caused by a dead server, a live server that
-// can't be reached, a lost request, or a lost reply.
-//
-// Call() is guaranteed to return (perhaps after a delay) *except* if the
-// handler function on the server side does not return.  Thus there
-// is no need to implement your own timeouts around Call().
-//
-// look at the comments in ../labrpc/labrpc.go for more details.
-//
-// if you're having trouble getting RPC to work, check that you've
-// capitalized all field names in structs passed over RPC, and
-// that the caller passes the address of the reply struct with &, not
-// the struct itself.
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 
@@ -245,24 +215,18 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	logLength := len(rf.log)
 	if args.Term < rf.currentTerm { // 1. Reply false if term < currentTerm
 		reply.Term = rf.currentTerm
 		reply.Success = false
 		return
 	}
-	if args.Term > rf.currentTerm { // If term T > currentTerm, set currentTerm = T and convert to follower
+	if args.Term > rf.currentTerm { // (All servers) If term T > currentTerm, set currentTerm = T and convert to follower
 		reply.Term = args.Term
 		rf.toFollower(args.Term)
 
 	}
-	rf.sendToNonBlockChan(rf.heartBeatChan, true)
-
-	// hopefully the line below works if order of evaluation if left to right
-	if args.PrevLogIndex > len(rf.log)-1 || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm { // 2. Reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
-		reply.Success = false
-		reply.Term = rf.currentTerm
-		return
-	}
+	rf.sendToNonBlockChan(rf.heartBeatChan, true) // send heartbeat message to self
 
 	if args.PrevLogIndex == -1 { // if prevLogIndex is -1, we're at the start of the log, and we can just delete the log and append everything
 		rf.log = make([]LogEntry, 0)
@@ -271,15 +235,39 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Term = rf.currentTerm
 		return
 	}
+	// hopefully the line below works if order of evaluation if left to right
+	if args.PrevLogIndex > logLength {
+		// 2. Reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
+		reply.Success = false
+		reply.Term = rf.currentTerm
+		return
+	}
+	if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+		reply.Success = false
+		reply.Term = rf.currentTerm
+		return
+	}
+	// If we get here, the terms are the same and there is an entry at prevLogIndex
+	rf.log = append(rf.log, args.Entries...) // append the entries
 
-	if args.LeaderCommit > rf.commitIndex { // 5. If leaderCommit > commitIndex
-		if args.LeaderCommit > len(rf.log)-1 {
+	if args.LeaderCommit > rf.commitIndex {
+		// 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+		lastIndex := rf.getLastIndex()
+		if args.LeaderCommit < lastIndex {
 			rf.commitIndex = args.LeaderCommit
 		} else {
-			rf.commitIndex = len(rf.log) - 1
+			rf.commitIndex = lastIndex
 		}
 	}
-
+	// update the logs
+	for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+		rf.applyChan <- ApplyMsg{
+			CommandValid: true,
+			Command:      rf.log[i].Command,
+			CommandIndex: i,
+		}
+		rf.lastApplied++
+	}
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -303,6 +291,47 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		return
 	}
 
+	if !reply.Success { // if it wasn't successful
+		rf.nextIndex[server]-- // lower the index for next try
+	} else {
+		updatedMatchIndex := args.PrevLogIndex + len(args.Entries)
+		if updatedMatchIndex > rf.matchIndex[server] {
+			rf.matchIndex[server] = updatedMatchIndex
+		}
+		rf.nextIndex[server] = rf.matchIndex[server] + 1
+	}
+
+	// If there exists an N such that N > commitIndex, a majority
+	// of matchIndex[i] ≥ N, and log[N].term == currentTerm:
+	// set commitIndex = N
+
+	for N := rf.getLastIndex(); N >= rf.commitIndex; N-- {
+		count := 1 // count myself
+		if rf.log[N].Term == rf.currentTerm {
+			for i := 0; i < len(rf.peers); i++ {
+				if i == rf.me {
+					continue
+				}
+				if rf.matchIndex[i] >= N {
+					count++
+				}
+			}
+			if count > len(rf.peers)/2 {
+				rf.commitIndex = N
+				// update the logs
+				for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+					rf.applyChan <- ApplyMsg{
+						CommandValid: true,
+						Command:      rf.log[i].Command,
+						CommandIndex: i,
+					}
+					rf.lastApplied++
+				}
+				break
+			}
+		}
+	}
+
 }
 
 // the service using Raft (e.g. a k/v server) wants to start
@@ -318,11 +347,20 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 // term. the third return value is true if this server believes it is
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	isLeader := rf.state == LEADER
 	index := -1
 	term := -1
-	isLeader := true
+	if isLeader {
+		index = len(rf.log)
+		term = rf.currentTerm
 
-	// Your code here (2B).
+		rf.log = append(rf.log, LogEntry{
+			Command: command,
+			Term:    rf.currentTerm,
+		})
+	}
 
 	return index, term, isLeader
 }
@@ -537,7 +575,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
-
+	rf.applyChan = applyCh
 	// Your initialization code here (2A, 2B, 2C).
 	rf.state = FOLLOWER
 	rf.currentTerm = 0
