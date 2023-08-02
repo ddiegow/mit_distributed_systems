@@ -19,7 +19,9 @@ package raft
 //
 
 import (
+	"bytes"
 	"math/rand"
+	"mit_distributed_systems/labgob"
 	"mit_distributed_systems/labrpc"
 	"sync"
 	"sync/atomic"
@@ -91,9 +93,7 @@ func (rf *Raft) GetState() (int, bool) {
 	return rf.currentTerm, rf.state == LEADER
 }
 
-// save Raft's persistent state to stable storage,
-// where it can later be retrieved after a crash and restart.
-// see paper's Figure 2 for a description of what should be persistent.
+// this function needs to be called while lock is being held
 func (rf *Raft) persist() {
 	// Your code here (2C).
 	// Example:
@@ -103,9 +103,16 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.log)
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
 }
 
-// restore previously persisted state.
+// this function needs to be called while lock is being held
 func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
@@ -123,6 +130,18 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var currentTerm int
+	var votedFor int
+	var log []LogEntry
+	if d.Decode(&currentTerm) != nil || d.Decode(&votedFor) != nil || d.Decode(&log) != nil {
+		panic("Something went wrong while decoding")
+	} else {
+		rf.currentTerm = currentTerm
+		rf.votedFor = votedFor
+		rf.log = log
+	}
 }
 
 type RequestVoteArgs struct {
@@ -144,6 +163,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	defer rf.persist()
 	reply.Term = rf.currentTerm
 
 	if args.Term < rf.currentTerm { // if candidate's term lower
@@ -190,6 +210,8 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 		return // skip the vote
 	}
 	if reply.Term > rf.currentTerm { // if the follower's term is higher than ours (there's another leader)
+		rf.toFollower(reply.Term)
+		rf.persist()
 		return // skip the vote
 	}
 
@@ -215,6 +237,7 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	defer rf.persist()
 	if args.Term < rf.currentTerm { // 1. Reply false if term < currentTerm
 		reply.Term = rf.currentTerm
 		reply.Success = false
@@ -267,6 +290,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	}
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	defer rf.persist()
 	if rf.state != LEADER {
 		return
 	}
@@ -340,6 +364,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	defer rf.persist()
 	isLeader := rf.state == LEADER
 	index := -1
 	term := -1
@@ -441,6 +466,7 @@ func (rf *Raft) toCandidate(originalState int) {
 	if rf.state != originalState {
 		return
 	}
+	// clean-up all the channels
 	rf.cleanUpChans()
 	// change state
 	rf.state = CANDIDATE
@@ -449,8 +475,7 @@ func (rf *Raft) toCandidate(originalState int) {
 	// vote for self
 	rf.votedFor = rf.me
 	rf.numVotes = 1
-	// clean-up all the channels
-
+	rf.persist()
 	rf.startElection()
 }
 
