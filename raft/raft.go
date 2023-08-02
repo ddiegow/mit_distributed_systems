@@ -225,6 +225,8 @@ type AppendEntriesArgs struct {
 type AppendEntriesReply struct {
 	Term    int
 	Success bool
+	XTerm   int
+	XIndex  int
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -245,8 +247,24 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	lastIndex := rf.getLastIndex()
 	// if the index is higher than the index of our items, the leader's log is longer than ours
 	// or the element at prevLogIndex has a different term than the leader, return false so we can try again in next appendEntry request with a lower index
-	if args.PrevLogIndex > lastIndex || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
-		return
+	if args.PrevLogIndex > lastIndex {
+		reply.XIndex = len(rf.log) // first empty slot location
+		reply.XTerm = -1           // indicate that there was nothing in that slot
+		return                     // try again
+	}
+	if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm { // we have a conflicting term
+		conflictingTerm := rf.log[args.PrevLogIndex].Term
+		// we need to find the first entry with a different term than conflictingTerm
+		i := args.PrevLogIndex
+		for ; i > -1; i-- {
+			if rf.log[i].Term != conflictingTerm {
+				break
+			}
+		}
+		// we found the first entry with a different term
+		reply.XIndex = i + 1
+		reply.XTerm = rf.log[reply.XIndex].Term
+		return // try again
 	}
 
 	rf.log = append(rf.log[:args.PrevLogIndex+1], args.Entries...) // append leader's entries to the log
@@ -296,6 +314,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	}
 
 	if !reply.Success { // if it wasn't successful
+		// TODO: need to change logic and use XTerm and XIndex
 		rf.nextIndex[server]-- // lower the index for next try (this line is probably problematic)
 		rf.matchIndex[server] = rf.nextIndex[server] - 1
 	} else {
