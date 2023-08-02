@@ -1,4 +1,4 @@
-// NOTE: THERE ARE TERM CHANGE WARNINGS IN TEST 2A-1. CLUSTER SERVER TERM CHANGES SOMETIMES WITHOUT ANY NETWORK FAILURES
+// NOTE: the TestFigure8Unreliable2C fails because the faster log replication has not been implemented
 package raft
 
 //
@@ -105,9 +105,9 @@ func (rf *Raft) persist() {
 	// rf.persister.SaveRaftState(data)
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
-	e.Encode(rf.currentTerm)
-	e.Encode(rf.votedFor)
-	e.Encode(rf.log)
+	if e.Encode(rf.currentTerm) != nil || e.Encode(rf.votedFor) != nil || e.Encode(rf.log) != nil {
+		panic("Something went wrong while encoding")
+	}
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
 }
@@ -132,15 +132,8 @@ func (rf *Raft) readPersist(data []byte) {
 	// }
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
-	var currentTerm int
-	var votedFor int
-	var log []LogEntry
-	if d.Decode(&currentTerm) != nil || d.Decode(&votedFor) != nil || d.Decode(&log) != nil {
+	if d.Decode(&rf.currentTerm) != nil || d.Decode(&rf.votedFor) != nil || d.Decode(&rf.log) != nil {
 		panic("Something went wrong while decoding")
-	} else {
-		rf.currentTerm = currentTerm
-		rf.votedFor = votedFor
-		rf.log = log
 	}
 }
 
@@ -244,24 +237,21 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 	if args.Term > rf.currentTerm { // (All servers) If term T > currentTerm, set currentTerm = T and convert to follower
-		reply.Term = args.Term
 		rf.toFollower(args.Term)
-
 	}
+	reply.Term = rf.currentTerm
+	reply.Success = false
 	rf.sendToNonBlockChan(rf.heartBeatChan, true) // we got an rpc message from the leader so send heartbeat message to self
 	lastIndex := rf.getLastIndex()
 	// if the index is higher than the index of our items, the leader's log is longer than ours
 	// or the element at prevLogIndex has a different term than the leader, return false so we can try again in next appendEntry request with a lower index
 	if args.PrevLogIndex > lastIndex || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
-		reply.Success = false
-		reply.Term = rf.currentTerm
 		return
 	}
 
 	rf.log = append(rf.log[:args.PrevLogIndex+1], args.Entries...) // append leader's entries to the log
 
 	reply.Success = true
-	reply.Term = rf.currentTerm
 
 	if args.LeaderCommit > rf.commitIndex {
 		// 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
@@ -306,7 +296,8 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	}
 
 	if !reply.Success { // if it wasn't successful
-		rf.nextIndex[server]-- // lower the index for next try
+		rf.nextIndex[server]-- // lower the index for next try (this line is probably problematic)
+		rf.matchIndex[server] = rf.nextIndex[server] - 1
 	} else {
 		updatedMatchIndex := args.PrevLogIndex + len(args.Entries)
 		// check that we're not outdated
@@ -436,7 +427,7 @@ func (rf *Raft) handleServer() {
 		case LEADER:
 			select {
 			case <-rf.stepDownChan: // we are already a follower, so next select iteration it won't send the heartbeat
-			case <-time.After(10 * time.Millisecond): // this seems to be the magic number, any lower than this and servers sometimes fail to agree, probably because of overlapping
+			case <-time.After(120 * time.Millisecond): // this seems to be the magic number, any lower than this and servers sometimes fail to agree, probably because of overlapping
 				rf.mu.Lock()
 				rf.heartBeat()
 				rf.mu.Unlock()
