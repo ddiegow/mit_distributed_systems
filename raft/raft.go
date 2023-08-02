@@ -314,9 +314,30 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	}
 
 	if !reply.Success { // if it wasn't successful
-		// TODO: need to change logic and use XTerm and XIndex
-		rf.nextIndex[server]-- // lower the index for next try (this line is probably problematic)
+		// There are three cases
+		// Case 1: slot is empty (XTerm == -1)
+		if reply.XTerm == -1 {
+			rf.nextIndex[server] = reply.XIndex
+		} else {
+			// Check if leader has XTerm
+			i := rf.nextIndex[server] - 1
+			for ; i >= -1; i-- {
+				if i == -1 {
+					break
+				}
+				if rf.log[i].Term == reply.XTerm {
+					break
+				}
+			}
+			if i > -1 { // Case 2: slot is not empty, leader has XTerm
+				rf.nextIndex[server] = i
+			} else { // Case 3: slot is not empty, leader doesn't have XTerm
+				rf.nextIndex[server] = reply.XIndex
+			}
+
+		}
 		rf.matchIndex[server] = rf.nextIndex[server] - 1
+
 	} else {
 		updatedMatchIndex := args.PrevLogIndex + len(args.Entries)
 		// check that we're not outdated
