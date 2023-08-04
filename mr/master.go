@@ -2,6 +2,7 @@
 package mr
 
 import (
+	"errors"
 	"log"
 	"net"
 	"net/http"
@@ -17,6 +18,7 @@ type Master struct {
 	reduceTasksPending    []string   // file names of the reduce tasks that haven't been started yet
 	reduceTasksInProgress []string   // file names of the reduce tasks that are in currently progress
 	varLock               sync.Mutex // lock to access struct variables
+	nReduce               int
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -28,15 +30,18 @@ func (m *Master) Task(args *TaskArgs, reply *TaskReply) error {
 	// send back a task to the worker
 	m.varLock.Lock()
 	defer m.varLock.Unlock()
+	reply.NReduce = m.nReduce
 	switch args.Command {
 	case "TASK": // worker is asking for a task
 		if len(m.mapTasksPending) > 0 { // if we still have map tasks pending
 			// send a map task
+			index := len(m.mapTasksPending) - 1
 			reply.TaskName = "MAP"
-			reply.File = m.mapTasksPending[len(m.mapTasksPending)-1]
-			m.mapTasksInProgress = append(m.mapTasksInProgress, m.mapTasksPending[len(m.mapTasksPending)-1]) // add to in progress
-			m.mapTasksPending = m.mapTasksPending[:len(m.mapTasksPending)-1]                                 // remove last item
-			return nil                                                                                       // all went well, so no error
+			reply.File = m.mapTasksPending[index]
+			reply.TaskId = index
+			m.mapTasksInProgress = append(m.mapTasksInProgress, m.mapTasksPending[index]) // add to in progress
+			m.mapTasksPending = m.mapTasksPending[:index]                                 // remove last item
+			return nil                                                                    // all went well, so no error
 		} else if len(m.mapTasksInProgress) > 0 { // if we still have map tasks in progress but none pending
 			// ask worker to wait
 			reply.TaskName = "WAIT"
@@ -64,7 +69,7 @@ func (m *Master) Task(args *TaskArgs, reply *TaskReply) error {
 		}
 	}
 
-	return nil
+	return errors.New("Something went wrong in the RPC handler")
 }
 
 // start a thread that listens for RPCs from worker.go
@@ -98,6 +103,7 @@ func MakeMaster(files []string, nReduce int) *Master {
 	m := Master{}
 
 	// Your code here.
+	m.nReduce = nReduce
 	m.mapTasksPending = make([]string, 0)
 	for _, fileName := range files {
 		m.mapTasksPending = append(m.mapTasksPending, fileName)

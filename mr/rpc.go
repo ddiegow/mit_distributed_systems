@@ -24,7 +24,9 @@ type TaskArgs struct {
 
 type TaskReply struct {
 	TaskName string
+	TaskId   int
 	File     string
+	NReduce  int
 }
 
 // Add your RPC definitions here.
