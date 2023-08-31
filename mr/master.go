@@ -3,6 +3,7 @@ package mr
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -89,10 +90,9 @@ func (m *Master) server() {
 // main/mrmaster.go calls Done() periodically to find out
 // if the entire job has finished.
 func (m *Master) Done() bool {
-	ret := false
-
+	ret := len(m.mapTasksPending) == 0 && len(m.mapTasksPending) == 0 && len(m.reduceTasksInProgress) == 0 && len(m.reduceTasksPending) == 0
 	// Your code here.
-
+	fmt.Printf("Ret is %v\n", ret)
 	return ret
 }
 
@@ -108,6 +108,7 @@ func MakeMaster(files []string, nReduce int) *Master {
 	for _, fileName := range files {
 		m.mapTasksPending = append(m.mapTasksPending, fileName)
 	}
+	fmt.Printf("Appended %d tasks\n", len(m.mapTasksPending))
 	m.server()
 	return &m
 }
