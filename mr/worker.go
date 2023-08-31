@@ -7,9 +7,16 @@ import (
 	"log"
 	"net/rpc"
 	"os"
+	"sort"
 	"strconv"
 	"time"
 )
+
+type ByKey []KeyValue
+
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 // Map functions return a slice of KeyValue.
 type KeyValue struct {
@@ -36,8 +43,9 @@ func Worker(mapf func(string, string) []KeyValue,
 			Command: "TASK",
 		}
 		taskReply := TaskReply{}
-		err := call("Master.Task", &taskArgs, &taskReply)
+		err := !call("Master.Task", &taskArgs, &taskReply)
 		if err {
+			fmt.Println("Something went wrong. Coudln't fetch a task")
 			time.Sleep(50 * time.Millisecond)
 			continue
 		}
@@ -51,7 +59,6 @@ func Worker(mapf func(string, string) []KeyValue,
 			return
 		case "MAP":
 			// Get intermediate key-value list
-			intermediate := []KeyValue{}
 			filename := taskReply.File
 			file, err := os.Open(filename)
 			if err != nil {
@@ -63,25 +70,33 @@ func Worker(mapf func(string, string) []KeyValue,
 			}
 			file.Close()
 			kva := mapf(filename, string(content))
-			intermediate = append(intermediate, kva...)
+			sort.Sort(ByKey(kva))
 			// Create tmp bucket files
-			tmpFiles := make([]*os.File, nReduce)
+			tmpFiles := make([]*os.File, 0)
 			for i := 0; i < taskReply.NReduce; i++ {
-				file, err = os.CreateTemp("tmp", "mr-"+strconv.Itoa(i))
+				name := "mr-" + strconv.Itoa(i)
+				file, err = os.CreateTemp("tmp", name)
+				if err != nil {
+					log.Fatalf("cannot create temporary file %v. Error: %v", name, err)
+				}
 				tmpFiles = append(tmpFiles, file)
 			}
 			// Put each key-value pair in the correct tmp bucket
 			for _, kv := range kva {
 				n := ihash(kv.Key) % nReduce
-				tmpFiles[n].WriteString(kv.Key + "\n")
+				tmpFiles[n].WriteString(kv.Key + " " + kv.Value + "\n")
 			}
 			// Once we finish, rename tmp files
 			for i, file := range tmpFiles {
 				file.Close()
-				err := os.Rename(file.Name(), "mr-"+strconv.Itoa(taskReply.TaskId)+"-"+strconv.Itoa(i))
+				oldpath := file.Name()
+				newpath := "tmp/mr-" + strconv.Itoa(taskReply.TaskId) + "-" + strconv.Itoa(i)
+
+				err := os.Rename(oldpath, newpath)
 				if err != nil {
 					log.Panic("Couldn't rename one of the files!")
 				}
+
 			}
 		case "REDUCE":
 		}

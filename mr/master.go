@@ -90,9 +90,9 @@ func (m *Master) server() {
 // main/mrmaster.go calls Done() periodically to find out
 // if the entire job has finished.
 func (m *Master) Done() bool {
-	ret := len(m.mapTasksPending) == 0 && len(m.mapTasksPending) == 0 && len(m.reduceTasksInProgress) == 0 && len(m.reduceTasksPending) == 0
+
+	ret := len(m.mapTasksPending) == 0 && len(m.mapTasksInProgress) == 0 && len(m.reduceTasksInProgress) == 0 && len(m.reduceTasksPending) == 0
 	// Your code here.
-	fmt.Printf("Ret is %v\n", ret)
 	return ret
 }
 
