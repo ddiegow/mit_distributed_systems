@@ -43,9 +43,9 @@ func Worker(mapf func(string, string) []KeyValue,
 			Command: "TASK",
 		}
 		taskReply := TaskReply{}
-		err := !call("Master.Task", &taskArgs, &taskReply)
-		if err {
-			fmt.Println("Something went wrong. Coudln't fetch a task")
+		ok := call("Master.Task", &taskArgs, &taskReply)
+		if !ok {
+			fmt.Println("Something went wrong. Couldn't fetch a task")
 			time.Sleep(50 * time.Millisecond)
 			continue
 		}
@@ -60,6 +60,7 @@ func Worker(mapf func(string, string) []KeyValue,
 		case "MAP":
 			// Get intermediate key-value list
 			filename := taskReply.File
+			fmt.Printf("Processing %s\n", filename)
 			file, err := os.Open(filename)
 			if err != nil {
 				log.Fatalf("cannot open %v", filename)
@@ -97,6 +98,21 @@ func Worker(mapf func(string, string) []KeyValue,
 					log.Panic("Couldn't rename one of the files!")
 				}
 
+			}
+			fmt.Println("Finished processing file. Letting master server know")
+			taskArgs = TaskArgs{
+				Command:  "RESULT",
+				TaskName: "MAP",
+				File:     filename,
+			}
+			taskReply = TaskReply{}
+			for { // send messages until server accepts
+				ok := !call("Master.Task", &taskArgs, &taskReply)
+				if !ok {
+					time.Sleep(50 * time.Millisecond)
+					continue
+				}
+				break
 			}
 		case "REDUCE":
 		}

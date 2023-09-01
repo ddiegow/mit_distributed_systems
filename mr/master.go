@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/rpc"
 	"os"
+	"slices"
 	"sync"
 )
 
@@ -66,6 +67,8 @@ func (m *Master) Task(args *TaskArgs, reply *TaskReply) error {
 	case "RESULT": // worker is sending back result of task
 		switch args.TaskName {
 		case "MAP": // we are getting the results of a map task
+			filename := args.File
+			m.mapTasksInProgress = slices.DeleteFunc(m.mapTasksInProgress, func(s string) bool { return s == filename })
 		case "REDUCE": // we are getting the results of a reduce task
 		}
 	}
