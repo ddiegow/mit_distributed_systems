@@ -17,8 +17,8 @@ type Master struct {
 	// Your definitions here.
 	mapTasksPending       []string   // file names of the mapping tasks that haven't been started yet
 	mapTasksInProgress    []string   // file names of the mapping tasks that are currently in progress
-	reduceTasksPending    []string   // file names of the reduce tasks that haven't been started yet
-	reduceTasksInProgress []string   // file names of the reduce tasks that are in currently progress
+	reduceTasksPending    []int      // file names of the reduce tasks that haven't been started yet
+	reduceTasksInProgress []int      // file names of the reduce tasks that are in currently progress
 	varLock               sync.Mutex // lock to access struct variables
 	nReduce               int
 }
@@ -50,10 +50,10 @@ func (m *Master) Task(args *TaskArgs, reply *TaskReply) error {
 			return nil
 		} else if len(m.reduceTasksPending) > 0 { // if all map tasks are done and we have reduce tasks pending
 			// send a reduce task
-			reply.TaskName = "MAP"
-			reply.File = m.reduceTasksPending[len(m.mapTasksPending)-1]
-			m.mapTasksInProgress = append(m.reduceTasksInProgress, m.reduceTasksPending[len(m.reduceTasksPending)-1]) // add to in progress
-			m.mapTasksPending = m.reduceTasksPending[:len(m.reduceTasksPending)-1]                                    // remove last item
+			reply.TaskName = "REDUCE"
+			reply.ReduceTaskNumber = m.reduceTasksPending[len(m.mapTasksPending)-1]
+			m.reduceTasksInProgress = append(m.reduceTasksInProgress, m.reduceTasksPending[len(m.reduceTasksPending)-1]) // add to in progress
+			m.reduceTasksPending = m.reduceTasksPending[:len(m.reduceTasksPending)-1]                                    // remove last item
 			return nil
 		} else if len(m.reduceTasksInProgress) > 0 { // if there are no reduce tasks pending but there are some in progress
 			// ask worker to wait
@@ -64,12 +64,14 @@ func (m *Master) Task(args *TaskArgs, reply *TaskReply) error {
 			reply.TaskName = "TERMINATE"
 			return nil
 		}
-	case "RESULT": // worker is sending back result of task
+	case "RESULT": // worker is sending back confirmation of a completed task
 		switch args.TaskName {
-		case "MAP": // we are getting the results of a map task
-			filename := args.File
-			m.mapTasksInProgress = slices.DeleteFunc(m.mapTasksInProgress, func(s string) bool { return s == filename })
+		case "MAP": // we are getting confirmation of a map task completed
+			filename := args.File                                                                                        // get the name of the file that was processed
+			m.mapTasksInProgress = slices.DeleteFunc(m.mapTasksInProgress, func(s string) bool { return s == filename }) // remove it from the list
 		case "REDUCE": // we are getting the results of a reduce task
+			taskNumber := args.ReduceTaskNumber
+			m.reduceTasksInProgress = slices.DeleteFunc(m.reduceTasksInProgress, func(i int) bool { return i == taskNumber })
 		}
 	}
 
@@ -108,8 +110,12 @@ func MakeMaster(files []string, nReduce int) *Master {
 	// Your code here.
 	m.nReduce = nReduce
 	m.mapTasksPending = make([]string, 0)
+	m.reduceTasksPending = make([]int, 0)
 	for _, fileName := range files {
 		m.mapTasksPending = append(m.mapTasksPending, fileName)
+	}
+	for index := range m.mapTasksPending {
+		m.reduceTasksPending = append(m.reduceTasksPending, index)
 	}
 	fmt.Printf("Appended %d tasks\n", len(m.mapTasksPending))
 	m.server()

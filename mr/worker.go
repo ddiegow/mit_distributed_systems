@@ -115,6 +115,17 @@ func Worker(mapf func(string, string) []KeyValue,
 				break
 			}
 		case "REDUCE":
+			taskNumber := taskReply.ReduceTaskNumber // first we get the reduce task number
+			fmt.Printf("Starting reduce task #%d\n", taskNumber)
+			// next we generate all the file names and save them in an array
+			fileNames := make([]string, 0)
+			for i := 0; i < nReduce; i++ {
+				fileName := "mr-" + strconv.Itoa(taskNumber) + "-" + strconv.Itoa(i)
+				fileNames = append(fileNames, fileName)
+			}
+			// next we process the files and create the intermediate key-value array
+			// next we apply the reduce function on the intermediate key-value array
+			// finally we let the master server know we've finished
 		}
 
 	}

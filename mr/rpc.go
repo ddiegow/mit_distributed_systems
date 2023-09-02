@@ -17,16 +17,18 @@ import (
 //
 
 type TaskArgs struct {
-	Command  string
-	TaskName string // optional for
-	File     string
+	Command          string
+	TaskName         string // optional for
+	File             string
+	ReduceTaskNumber int
 }
 
 type TaskReply struct {
-	TaskName string
-	TaskId   int
-	File     string
-	NReduce  int
+	TaskName         string
+	TaskId           int
+	File             string
+	ReduceTaskNumber int
+	NReduce          int
 }
 
 // Add your RPC definitions here.
