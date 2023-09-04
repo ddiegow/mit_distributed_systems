@@ -61,7 +61,6 @@ func Worker(mapf func(string, string) []KeyValue,
 		case "MAP":
 			// Get intermediate key-value list
 			filename := taskReply.File
-			//fmt.Printf("Processing %s\n", filename)
 			file, err := os.Open(filename)
 			if err != nil {
 				log.Fatalf("cannot open %v", filename)
@@ -100,7 +99,6 @@ func Worker(mapf func(string, string) []KeyValue,
 				}
 
 			}
-			//fmt.Println("Finished processing file. Letting master server know")
 			taskArgs = TaskArgs{
 				Command:  "RESULT",
 				TaskName: "MAP",
@@ -117,7 +115,6 @@ func Worker(mapf func(string, string) []KeyValue,
 			}
 		case "REDUCE":
 			taskNumber := taskReply.ReduceTaskNumber // first we get the reduce task number
-			//fmt.Printf("Starting reduce task #%d\n", taskNumber)
 			// next we generate all the file names and save them in an array
 			fileNames := make([]string, 0)
 			kva := make([]KeyValue, 0)
@@ -125,12 +122,10 @@ func Worker(mapf func(string, string) []KeyValue,
 				fileName := "mr-" + strconv.Itoa(i) + "-" + strconv.Itoa(taskNumber)
 				fileNames = append(fileNames, fileName)
 			}
-			//fmt.Println(fileNames)
 			// next we process the files and create the intermediate key-value array
 			for _, fileName := range fileNames {
 				file, err := os.Open(fileName) // open the file
 				if err != nil {                // if there was an error, abort
-					fmt.Printf("Error: %v\n", err)
 					log.Panic("Couldn't open one of the intermediate files")
 				}
 				scanner := bufio.NewScanner(file)
@@ -140,11 +135,11 @@ func Worker(mapf func(string, string) []KeyValue,
 					kva = append(kva, KeyValue{Key: kvp[0], Value: kvp[1]}) // append the key and value to the file
 				}
 				file.Close() // close the file
-				os.Remove(fileName)
+
 			}
 			sort.Sort(ByKey(kva)) // sort the array
 			ofileName := "mr-out-" + strconv.Itoa(taskNumber)
-			ofile, _ := os.Create(ofileName)
+			ofile, _ := os.CreateTemp("./", ofileName)
 			// next we apply the reduce function on the intermediate key-value array
 			i := 0
 			for i < len(kva) {
@@ -165,9 +160,8 @@ func Worker(mapf func(string, string) []KeyValue,
 			}
 
 			ofile.Close()
-
+			os.Rename(ofile.Name(), ofileName)
 			// finally we let the master server know we've finished
-			//fmt.Println("Finished reducing files. Letting master server know")
 			taskArgs = TaskArgs{
 				Command:          "RESULT",
 				TaskName:         "REDUCE",
