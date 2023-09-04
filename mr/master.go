@@ -3,7 +3,6 @@ package mr
 
 import (
 	"errors"
-	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -21,6 +20,7 @@ type Master struct {
 	reduceTasksInProgress []int      // file names of the reduce tasks that are in currently progress
 	varLock               sync.Mutex // lock to access struct variables
 	nReduce               int
+	totalFiles            int
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -51,7 +51,8 @@ func (m *Master) Task(args *TaskArgs, reply *TaskReply) error {
 		} else if len(m.reduceTasksPending) > 0 { // if all map tasks are done and we have reduce tasks pending
 			// send a reduce task
 			reply.TaskName = "REDUCE"
-			reply.ReduceTaskNumber = m.reduceTasksPending[len(m.mapTasksPending)-1]
+			reply.TotalFiles = m.totalFiles
+			reply.ReduceTaskNumber = m.reduceTasksPending[len(m.reduceTasksPending)-1]
 			m.reduceTasksInProgress = append(m.reduceTasksInProgress, m.reduceTasksPending[len(m.reduceTasksPending)-1]) // add to in progress
 			m.reduceTasksPending = m.reduceTasksPending[:len(m.reduceTasksPending)-1]                                    // remove last item
 			return nil
@@ -61,6 +62,7 @@ func (m *Master) Task(args *TaskArgs, reply *TaskReply) error {
 			return nil
 		} else { // everything is finished!
 			// send termination signal
+
 			reply.TaskName = "TERMINATE"
 			return nil
 		}
@@ -69,9 +71,11 @@ func (m *Master) Task(args *TaskArgs, reply *TaskReply) error {
 		case "MAP": // we are getting confirmation of a map task completed
 			filename := args.File                                                                                        // get the name of the file that was processed
 			m.mapTasksInProgress = slices.DeleteFunc(m.mapTasksInProgress, func(s string) bool { return s == filename }) // remove it from the list
+			return nil
 		case "REDUCE": // we are getting the results of a reduce task
 			taskNumber := args.ReduceTaskNumber
 			m.reduceTasksInProgress = slices.DeleteFunc(m.reduceTasksInProgress, func(i int) bool { return i == taskNumber })
+			return nil
 		}
 	}
 
@@ -111,13 +115,13 @@ func MakeMaster(files []string, nReduce int) *Master {
 	m.nReduce = nReduce
 	m.mapTasksPending = make([]string, 0)
 	m.reduceTasksPending = make([]int, 0)
-	for _, fileName := range files {
-		m.mapTasksPending = append(m.mapTasksPending, fileName)
+	m.mapTasksPending = append(m.mapTasksPending, files...)
+	m.totalFiles = len(files)
+	for i := 0; i < nReduce; i++ {
+		m.reduceTasksPending = append(m.reduceTasksPending, i)
 	}
-	for index := range m.mapTasksPending {
-		m.reduceTasksPending = append(m.reduceTasksPending, index)
-	}
-	fmt.Printf("Appended %d tasks\n", len(m.mapTasksPending))
+
+	//fmt.Printf("Appended %d tasks\n", len(m.mapTasksPending))
 	m.server()
 	return &m
 }

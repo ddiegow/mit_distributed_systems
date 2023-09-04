@@ -29,6 +29,7 @@ type TaskReply struct {
 	File             string
 	ReduceTaskNumber int
 	NReduce          int
+	TotalFiles       int
 }
 
 // Add your RPC definitions here.
